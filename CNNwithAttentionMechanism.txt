@@ -1,0 +1,190 @@
+import random
+import tensorflow as tf
+import keras
+from keras.utils import to_categorical
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from PIL import Image
+from sklearn.model_selection import train_test_split
+import os
+import warnings
+import matplotlib.image as mpimg
+from keras.layers import Conv2D, MaxPool2D, Dropout, Flatten, Dense, BatchNormalization, Layer, Activation
+from keras.layers import Masking, LSTM, Conv1D, Embedding, GRU, Reshape
+from keras.models import Sequential, Model, load_model,save_model
+from keras import optimizers
+from keras.callbacks import ModelCheckpoint, EarlyStopping
+from keras.preprocessing.image import ImageDataGenerator
+import re
+from tensorflow.python.keras.layers import CuDNNGRU
+
+
+
+warnings.filterwarnings("ignore")
+
+
+mysize=(30,30)
+images=[]
+labels=[]
+folder="d:\\audios\\spectro"
+for filename in os.listdir(folder):
+    # image=mpimg.imread(os.path.join(folder,filename))
+    image = Image.open(os.path.join(folder, filename))
+    image=image.resize(mysize)
+    image = np.array(image)
+    image = image.astype('float32')
+    image /= 255
+    if image is not None:
+        images.append(image)
+        # labels.append(filename)
+
+# print(image.shape)
+emotions = {"F": 1, "T": 2, "A": 3,"E": 4, "L": 5, "W": 6,"N":7}
+noExt=[]
+listOfFileNames=[]
+dir_contents = os.listdir(folder)
+# loop over each file in the directory
+for filename in dir_contents:
+    # check if the file is a regular file (i.e., not a directory)
+    if os.path.isfile(os.path.join(folder, filename)):
+        listOfFileNames.append(filename)
+
+
+for i in listOfFileNames:
+    sizeors=len(i)
+    filNames=i[:sizeors-4]
+    noExt.append(filNames)
+
+
+new_list = []
+for file_name in noExt:
+    for key, value in emotions.items():
+        if key in file_name:
+            new_list.append(value)
+            break
+    else:
+        new_list.append(None) # if the key is not found, append None to the list
+
+
+
+
+
+images=np.array(images)
+mlabels=np.array(new_list)
+
+trainX,testX,trainY,testY=train_test_split(images,mlabels,test_size=0.2,random_state=42)
+trainX=np.array(trainX)
+testX=np.array(testX)
+trainY=np.array(trainY)
+testY=np.array(testY)
+
+print(trainX.shape) # use whatever you see here as the input_shape parameter in your Conv2D first layer
+
+# Subtract 1 to ensure that labels range from 0 to 6 since we have 7 classes
+trainY -= 1
+testY -= 1
+
+
+trainY = to_categorical(trainY, num_classes=7)
+testY= to_categorical(testY,num_classes=7)
+
+class SelfAttention(Layer):
+    def __init__(self, channels):
+        super(SelfAttention, self).__init__()
+        self.channels = channels
+
+    def build(self, input_shape):
+        self.query_conv = Conv2D(filters=self.channels // 8, kernel_size=1)
+        self.key_conv = Conv2D(filters=self.channels // 8, kernel_size=1)
+        self.value_conv = Conv2D(filters=self.channels, kernel_size=1)
+        self.gamma = self.add_weight("gamma", shape=[1], initializer="zeros", trainable=True)
+
+    def call(self, x):
+        batch_size, height, width, num_channels = x.shape
+        query = self.query_conv(x)
+        key = self.key_conv(x)
+        value = self.value_conv(x)
+
+        query = Reshape((height * width, self.channels // 8))(query)
+        key = Reshape((height * width, self.channels // 8))(key)
+        value = Reshape((height * width, self.channels))(value)
+
+        attention_scores = tf.matmul(query, key, transpose_b=True)
+        attention_scores = tf.nn.softmax(attention_scores, axis=-1)
+
+        attention_output = tf.matmul(attention_scores, value)
+        attention_output = Reshape((height, width, self.channels))(attention_output)
+
+        x = self.gamma * attention_output + x
+        return x
+
+model=Sequential()
+
+model.add(Conv2D(32,(3,3),activation='relu',input_shape=(30,30,4))) # 30 by 30 with 4 color image
+model.add(BatchNormalization())
+model.add(MaxPool2D(pool_size=(2,2)))
+model.add(Dropout(0.25))
+
+model.add(SelfAttention(channels=32))
+
+model.add(Conv2D(64,(3,3),activation='relu'))
+model.add(BatchNormalization())
+model.add(MaxPool2D(pool_size=(2,2)))
+model.add(Dropout(0.25))
+
+model.add(SelfAttention(channels=64))
+
+model.add(Conv2D(128,(3,3),activation='relu'))
+model.add(BatchNormalization())
+model.add(MaxPool2D(pool_size=(2,2)))
+model.add(Dropout(0.25))
+
+model.add(SelfAttention(channels=128))
+
+model.add(Flatten())
+
+model.add(Dense(64,activation='relu'))
+model.add(Dense(7,activation='softmax'))
+
+
+
+
+# Check summary
+
+# print(make_gcn_cnn_model.summary())
+
+
+model.compile(optimizer='adam',loss='categorical_crossentropy',metrics=['accuracy'])
+# # Early stopping
+es=EarlyStopping(monitor="loss",min_delta=0.01,patience=3,verbose=1,mode='auto')
+# Model Checkpoint
+mc=ModelCheckpoint(filepath="./bestModel.h5",monitor="loss",verbose=1,save_best_only=True,mode='auto')
+cd=[es,mc]
+
+# Model Training
+
+# hs=model.fit(x=np.reshape(images,[460,1000,400]), y=np.array(list(new_list)), epochs=2)
+hs=model.fit(trainX,trainY,batch_size=64,epochs=3,validation_data=(testX,testY))
+
+
+# plotting
+# plt.figure(0)
+# plt.plot(hs.history['accuracy'], label='Accuracy')
+# plt.plot(hs.history['val_accuracy'], label='Val Acc')
+# plt.title("Accuracy")
+# plt.xlabel('epochs')
+# plt.ylabel('Accuracy')
+# plt.legend()
+# plt.show()
+
+
+
+# plt.figure(0)
+# plt.plot(hs.history['loss'], label='Training Loss')
+# plt.plot(hs.history['val_loss'], label='Val Loss')
+# plt.title("loss")
+# plt.xlabel('epochs')
+# plt.ylabel('loss')
+# plt.legend()
+# plt.show()
